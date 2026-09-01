@@ -12,3 +12,12 @@
 2026-08-31 13:41:01  INFO      Gold   | EMA(8):4456.7755 EMA(21):4452.7774 RSI:52.1  ATR:4.0782
 2026-08-31 13:41:01  INFO      BTC    | EMA(8):78476.4257 EMA(21):78488.8049 RSI:33.1  ATR:107.4588
 2026-08-31 13:41:02  INFO      ✅ TRADE OPENED | BTCUSDm SELL | Lot:0.01 | Price:78381.34 | SL:78542.53 | TP:78166.42
+2026-09-01 02:49:44  INFO      =======================================================
+2026-09-01 02:49:44  INFO        ScalpingEA Python — Starting Up
+2026-09-01 02:49:44  INFO      =======================================================
+2026-09-01 02:49:44  INFO      Connected: Rasi | Balance: $12.16 | Broker: Exness-MT5Trial9
+2026-09-01 02:49:44  INFO      Gold symbol   : XAUUSDm
+2026-09-01 02:49:44  INFO      Nasdaq symbol : NOT FOUND
+2026-09-01 02:49:44  INFO      BTC symbol    : BTCUSDm
+2026-09-01 02:49:44  INFO      EA running. Press Ctrl+C to stop.
+
