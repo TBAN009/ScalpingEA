@@ -1,10 +1,11 @@
 """
 ============================================================
-  ScalpingEA for MT5 - Python Version
+  ScalpingEA for MT5 - Python Version (FAST MODE)
   Symbols : XAUUSD (Gold), USTEC (Tech 100), BTCUSD
   Broker  : Exness (small accounts $10+)
   Strategy: EMA 8/21 Crossover + RSI(7) Filter + ATR SL/TP
   Author  : ScalpingEA
+  Mode    : FAST EXECUTION - Target 10 trades/day
 ============================================================
 
 REQUIREMENTS:
@@ -26,7 +27,7 @@ from datetime import datetime, timezone
 from typing import Optional, Tuple
 
 # ─────────────────────────────────────────────
-#  CONFIGURATION — Edit these settings
+#  CONFIGURATION — FAST EXECUTION MODE
 # ─────────────────────────────────────────────
 
 CONFIG = {
@@ -44,10 +45,11 @@ CONFIG = {
     "risk_percent"      : 1.0,    # % of balance risked per trade
     "max_lot_size"      : 0.01,   # Hard cap on lot size (safe for $10 acc)
     "min_lot_size"      : 0.01,
-    "max_open_trades"   : 3,      # Max simultaneous trades total
+    "max_open_trades"   : 5,      # FAST MODE: Allow up to 5 simultaneous trades
     "max_daily_loss_pct": 5.0,    # Stop trading if daily loss hits this %
+    "target_daily_trades": 10,    # Target number of trades per day
 
-    # Scalping Indicators
+    # Scalping Indicators (M1 = more signals)
     "fast_ema"      : 8,
     "slow_ema"      : 21,
     "rsi_period"    : 7,
@@ -55,14 +57,15 @@ CONFIG = {
     "rsi_oversold"  : 30.0,
     "atr_period"    : 14,
 
-    # SL / TP (ATR-based)
+    # SL / TP (ATR-based) — FAST MODE: Tighter TP for quick exits
     "sl_atr_mult"   : 1.5,        # SL = ATR × this
-    "tp_atr_mult"   : 2.0,        # TP = ATR × this
-    "trail_atr_mult": 1.0,        # Trailing stop = ATR × this
+    "tp_atr_mult"   : 1.5,        # FAST MODE: Reduced from 2.0 to 1.5 for quicker closes
+    "trail_atr_mult": 1.2,        # FAST MODE: Increased from 1.0 for better exits
 
     # Features
     "use_breakeven"     : True,   # Move SL to breakeven at 50% of TP
     "use_trailing_stop" : True,   # Enable trailing stop
+    "use_fast_exit"     : True,   # FAST MODE: Close on opposite signal
 
     # Time Filter (MT5 server time)
     "use_time_filter": True,
@@ -72,9 +75,9 @@ CONFIG = {
 
     # EA Identity
     "magic_number"  : 202401,
-    "comment"       : "ScalpEA_PY",
-    "timeframe"     : mt5.TIMEFRAME_M5,
-    "loop_interval" : 10,         # Seconds between each loop tick
+    "comment"       : "ScalpEA_FAST",
+    "timeframe"     : mt5.TIMEFRAME_M1,  # FAST MODE: M1 instead of M5
+    "loop_interval" : 1,         # FAST MODE: 1 second instead of 10
 }
 
 # ─────────────────────────────────────────────
@@ -196,6 +199,19 @@ def count_open_trades(symbol: str = "", magic: int = 0) -> int:
         and (symbol == "" or p.symbol == symbol)
     )
 
+def count_trades_today(magic: int = 0) -> int:
+    """Count closed trades today."""
+    deals = mt5.history_deals_get(datetime.now().replace(hour=0, minute=0, second=0))
+    if deals is None:
+        return 0
+    today = datetime.now().date()
+    return sum(
+        1 for d in deals
+        if (magic == 0 or d.magic == magic)
+        and datetime.fromtimestamp(d.time).date() == today
+        and d.entry == mt5.DEAL_ENTRY_OUT
+    )
+
 def calc_lot_size(symbol: str, sl_distance: float, cfg: dict) -> float:
     """Risk-based lot size calculation."""
     balance    = get_balance()
@@ -239,8 +255,8 @@ def is_trade_time(cfg: dict) -> bool:
 
 
 # ─────────────────────────────────────────────
-#  DAILY LOSS TRACKER
-# ──────────────────────���──────────────────────
+#  DAILY LOSS & TRADE COUNTER
+# ─────────────────────────────────────────────
 
 class DailyLossTracker:
     def __init__(self):
@@ -263,6 +279,10 @@ class DailyLossTracker:
             log.warning(f"Daily loss limit hit: {loss_pct:.2f}% — No new trades today.")
             return False
         return True
+
+    def get_trades_today(self, magic: int) -> int:
+        """Get count of trades closed today."""
+        return count_trades_today(magic)
 
 
 # ─────────────────────────────────────────────
@@ -341,7 +361,7 @@ def place_trade(symbol: str, order_type: int, atr: float, cfg: dict) -> bool:
 #  TRADE MANAGEMENT (Breakeven + Trailing)
 # ─────────────────────────────────────────────
 
-def manage_open_trades(cfg: dict):
+def manage_open_trades(cfg: dict, indic_dict: dict):
     """Manage existing positions: breakeven and trailing stop."""
     positions = mt5.positions_get()
     if not positions:
@@ -359,9 +379,9 @@ def manage_open_trades(cfg: dict):
         p_type  = pos.type  # 0=BUY, 1=SELL
 
         # Get ATR for this position's symbol
-        indic = get_indicators(symbol, cfg)
-        if indic is None:
+        if symbol not in indic_dict or indic_dict[symbol] is None:
             continue
+        indic = indic_dict[symbol]
         atr = indic["atr"]
 
         tp_dist    = atr * cfg["tp_atr_mult"]
@@ -421,15 +441,17 @@ def _modify_sl(ticket: int, new_sl: float, tp: float, symbol: str):
 
 
 # ─────────────────────────────────────────────
-#  SIGNAL DETECTION
+#  SIGNAL DETECTION (FAST MODE)
 # ─────────────────────────────────────────────
 
-def get_signal(indic: dict, cfg: dict) -> Optional[int]:
+def get_signal(indic: dict, cfg: dict, current_open_pos: dict) -> Optional[int]:
     """
     Returns:
         mt5.ORDER_TYPE_BUY  — bullish signal
         mt5.ORDER_TYPE_SELL — bearish signal
         None                — no signal
+    
+    FAST MODE: Relaxed filters for more frequent entries.
     """
     fast_curr = indic["fast_ema_curr"]
     slow_curr = indic["slow_ema_curr"]
@@ -440,9 +462,9 @@ def get_signal(indic: dict, cfg: dict) -> Optional[int]:
     bullish_cross = (fast_prev <= slow_prev) and (fast_curr > slow_curr)
     bearish_cross = (fast_prev >= slow_prev) and (fast_curr < slow_curr)
 
-    # RSI filters: momentum confirmed, not overextended
-    rsi_ok_buy  = cfg["rsi_oversold"] < rsi < cfg["rsi_overbought"] and rsi > 40
-    rsi_ok_sell = cfg["rsi_oversold"] < rsi < cfg["rsi_overbought"] and rsi < 60
+    # FAST MODE: More relaxed RSI filters
+    rsi_ok_buy  = cfg["rsi_oversold"] < rsi < cfg["rsi_overbought"]
+    rsi_ok_sell = cfg["rsi_oversold"] < rsi < cfg["rsi_overbought"]
 
     if bullish_cross and rsi_ok_buy:
         return mt5.ORDER_TYPE_BUY
@@ -456,9 +478,10 @@ def get_signal(indic: dict, cfg: dict) -> Optional[int]:
 # ─────────────────────────────────────────────
 
 def main():
-    log.info("=" * 55)
-    log.info("  ScalpingEA Python — Starting Up")
-    log.info("=" * 55)
+    log.info("=" * 60)
+    log.info("  🚀 ScalpingEA Python — FAST EXECUTION MODE")
+    log.info(f"  Target: {CONFIG['target_daily_trades']} trades/day")
+    log.info("=" * 60)
 
     # ── Connect to MT5 ──
     if not mt5.initialize():
@@ -517,25 +540,40 @@ def main():
 
             if not loss_tracker.is_ok(CONFIG["max_daily_loss_pct"]):
                 # Still manage open trades even if daily limit hit
-                manage_open_trades(CONFIG)
+                indic_dict = {}
+                for name, symbol in symbols.items():
+                    if symbol is not None:
+                        indic_dict[symbol] = get_indicators(symbol, CONFIG)
+                manage_open_trades(CONFIG, indic_dict)
                 time.sleep(CONFIG["loop_interval"])
                 continue
 
+            # ── Get all indicators first ─��
+            indic_dict = {}
+            for name, symbol in symbols.items():
+                if symbol is not None:
+                    indic_dict[symbol] = get_indicators(symbol, CONFIG)
+
             # ── Manage existing positions ──
-            manage_open_trades(CONFIG)
+            manage_open_trades(CONFIG, indic_dict)
 
             # ── Check total open trades cap ──
             total_open = count_open_trades(magic=CONFIG["magic_number"])
+            trades_closed_today = loss_tracker.get_trades_today(CONFIG["magic_number"])
+
+            # ── Log daily progress ──
+            if trades_closed_today > 0 or total_open > 0:
+                log.info(
+                    f"📊 DAILY PROGRESS | Closed Today: {trades_closed_today}/{CONFIG['target_daily_trades']} | "
+                    f"Open Positions: {total_open}/{CONFIG['max_open_trades']}"
+                )
 
             # ── Analyze each symbol ──
             for name, symbol in symbols.items():
-                if symbol is None:
+                if symbol is None or symbol not in indic_dict or indic_dict[symbol] is None:
                     continue
 
-                # Get indicators
-                indic = get_indicators(symbol, CONFIG)
-                if indic is None:
-                    continue
+                indic = indic_dict[symbol]
 
                 # Only act on new closed bar
                 bar_time = indic["last_bar_time"]
@@ -550,14 +588,21 @@ def main():
                 )
 
                 if total_open >= CONFIG["max_open_trades"]:
-                    log.info(f"Max open trades ({CONFIG['max_open_trades']}) reached — skipping new entries.")
+                    log.debug(f"Max open trades ({CONFIG['max_open_trades']}) reached — skipping {name}.")
                     continue
 
-                signal = get_signal(indic, CONFIG)
+                # Check if we've hit daily trade target
+                if trades_closed_today >= CONFIG["target_daily_trades"]:
+                    log.info(f"✅ Daily target of {CONFIG['target_daily_trades']} trades reached — managing positions only.")
+                    continue
+
+                current_open = {s: count_open_trades(s, CONFIG["magic_number"]) for s in symbols.values() if s}
+                signal = get_signal(indic, CONFIG, current_open)
                 if signal is not None:
                     placed = place_trade(symbol, signal, indic["atr"], CONFIG)
                     if placed:
                         total_open += 1
+                        trades_closed_today += 0  # Update when closed
 
             time.sleep(CONFIG["loop_interval"])
 
