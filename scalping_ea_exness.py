@@ -1,7 +1,7 @@
 """
 ============================================================
   ScalpingEA for MT5 - Python Version
-  Symbols : XAUUSD (Gold), NAS100 (NASDAQ), BTCUSD
+  Symbols : XAUUSD (Gold), USTEC (Tech 100), BTCUSD
   Broker  : Exness (small accounts $10+)
   Strategy: EMA 8/21 Crossover + RSI(7) Filter + ATR SL/TP
   Author  : ScalpingEA
@@ -36,8 +36,8 @@ CONFIG = {
     "mt5_server"   : None,       # e.g. "Exness-MT5Real8"
 
     # Symbols — Exness variants auto-detected
-    "trade_gold"   : True,
-    "trade_nasdaq" : True,
+    "trade_xauusd" : True,
+    "trade_ustec"  : True,
     "trade_btc"    : True,
 
     # Risk Management
@@ -98,8 +98,8 @@ log = logging.getLogger("ScalpingEA")
 # ─────────────────────────────────────────────
 
 SYMBOL_CANDIDATES = {
-    "gold"  : ["XAUUSD", "XAUUSDm", "GOLD", "XAUUSD."],
-    "nasdaq": ["NAS100", "USTEC", "NAS100m", "US100", "NDX"],
+    "xauusd": ["XAUUSD", "XAUUSDm", "GOLD", "XAUUSD."],
+    "ustec" : ["USTEC", "NAS100", "NAS100m", "US100", "NDX"],
     "btc"   : ["BTCUSD", "BTCUSDm", "BITCOIN", "BTC/USD"],
 }
 
@@ -240,7 +240,7 @@ def is_trade_time(cfg: dict) -> bool:
 
 # ─────────────────────────────────────────────
 #  DAILY LOSS TRACKER
-# ─────────────────────────────────────────────
+# ──────────────────────���──────────────────────
 
 class DailyLossTracker:
     def __init__(self):
@@ -482,18 +482,18 @@ def main():
 
     # ── Resolve symbols ──
     symbols = {}
-    if CONFIG["trade_gold"]:
-        s = resolve_symbol("gold")
-        symbols["Gold"]   = s
-        log.info(f"Gold symbol   : {s or 'NOT FOUND'}")
-    if CONFIG["trade_nasdaq"]:
-        s = resolve_symbol("nasdaq")
-        symbols["Nasdaq"] = s
-        log.info(f"Nasdaq symbol : {s or 'NOT FOUND'}")
+    if CONFIG["trade_xauusd"]:
+        s = resolve_symbol("xauusd")
+        symbols["XAUUSD"]  = s
+        log.info(f"XAUUSD symbol  : {s or 'NOT FOUND'}")
+    if CONFIG["trade_ustec"]:
+        s = resolve_symbol("ustec")
+        symbols["USTEC"]   = s
+        log.info(f"USTEC symbol   : {s or 'NOT FOUND'}")
     if CONFIG["trade_btc"]:
         s = resolve_symbol("btc")
-        symbols["BTC"]    = s
-        log.info(f"BTC symbol    : {s or 'NOT FOUND'}")
+        symbols["BTC"]     = s
+        log.info(f"BTC symbol     : {s or 'NOT FOUND'}")
 
     if all(v is None for v in symbols.values()):
         log.error("No valid symbols found. Check your Market Watch in MT5.")
