@@ -102,7 +102,7 @@ log = logging.getLogger("ScalpingEA")
 
 SYMBOL_CANDIDATES = {
     "xauusd": ["XAUUSD", "XAUUSDm", "GOLD", "XAUUSD."],
-    "ustec" : ["USTEC", "NAS100", "NAS100m", "US100", "NDX"],
+    "ustec" : ["USTECm", "NAS100", "NAS100m", "US100", "NDX"],
     "btc"   : ["BTCUSD", "BTCUSDm", "BITCOIN", "BTC/USD"],
 }
 
