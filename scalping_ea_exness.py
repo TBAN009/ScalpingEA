@@ -1,7 +1,7 @@
 """
 ============================================================
   ScalpingEA for MT5 - Python Version (FAST MODE)
-  Symbols : XAUUSD (Gold), USTEC (Tech 100), BTCUSD
+  Symbol  : USTEC (Tech 100) - MONO SYMBOL
   Broker  : Exness (small accounts $10+)
   Strategy: EMA 8/21 Crossover + RSI(7) Filter + ATR SL/TP
   Author  : ScalpingEA
@@ -28,7 +28,7 @@ from typing import Optional, Tuple
 
 # ─────────────────────────────────────────────
 #  CONFIGURATION — FAST EXECUTION MODE
-# ��────────────────────────────────────────────
+# ─────────────────────────────────────────────
 
 CONFIG = {
     # MT5 Login (leave as None to use already-logged-in terminal)
@@ -36,15 +36,12 @@ CONFIG = {
     "mt5_password" : None,       # e.g. "YourPassword"
     "mt5_server"   : None,       # e.g. "Exness-MT5Real8"
 
-    # Symbols — Exness variants auto-detected
-    "trade_xauusd" : False,      # Disabled for USETCm focus
-    "trade_ustec"  : True,       # USTECm primary trading symbol
-    "trade_btc"    : False,      # Disabled for USETCm focus
+    # Symbol — USTEC ONLY
+    "primary_symbol" : "USTEC",  # Primary trading symbol (USTEC/USTECm)
 
     # Risk Management
     "risk_percent"      : 1.0,    # % of balance risked per trade
-    "max_lot_size"      : 0.05,   # USTECm starting lot size (small lot)
-    "min_lot_size"      : 0.05,   # USTECm minimum lot size
+    "fixed_lot_size"    : 0.05,   # Fixed lot size for USTEC (starting small lot)
     "max_open_trades"   : 5,      # Max simultaneous trades total
     "max_daily_loss_pct": 5.0,    # Stop trading if daily loss hits this %
     "target_daily_trades": 10,    # Target number of trades per day
@@ -102,7 +99,7 @@ log = logging.getLogger("ScalpingEA")
 
 SYMBOL_CANDIDATES = {
     "xauusd": ["XAUUSD", "XAUUSDm", "GOLD", "XAUUSD."],
-    "ustec" : ["USTEC", "NAS100", "NAS100m", "US100", "NDX"],
+    "ustec" : ["USTECm", "USTEC", "NAS100m", "NAS100", "US100", "NDX"],
     "btc"   : ["BTCUSD", "BTCUSDm", "BITCOIN", "BTC/USD"],
 }
 
@@ -111,13 +108,16 @@ def resolve_symbol(asset: str) -> Optional[str]:
     for candidate in SYMBOL_CANDIDATES.get(asset, []):
         info = mt5.symbol_info(candidate)
         if info is not None and info.visible:
+            log.info(f"✓ Symbol {candidate} found and visible")
             return candidate
         # Try to add to market watch
         if info is not None:
             mt5.symbol_select(candidate, True)
             info = mt5.symbol_info(candidate)
             if info and info.bid > 0:
+                log.info(f"✓ Symbol {candidate} added to market watch")
                 return candidate
+    log.error(f"Could not resolve symbol for {asset}")
     return None
 
 
@@ -212,32 +212,6 @@ def count_trades_today(magic: int = 0) -> int:
         and d.entry == mt5.DEAL_ENTRY_OUT
     )
 
-def calc_lot_size(symbol: str, sl_distance: float, cfg: dict) -> float:
-    """
-    Risk-based lot size calculation.
-    For USTECm: Uses fixed 0.05 lot size (starting small lot).
-    """
-    # For USTECm, use fixed lot size
-    if "ustec" in symbol.lower():
-        return cfg["max_lot_size"]
-    
-    balance    = get_balance()
-    risk_amt   = balance * (cfg["risk_percent"] / 100.0)
-    sym_info   = mt5.symbol_info(symbol)
-    if sym_info is None or sl_distance == 0:
-        return cfg["min_lot_size"]
-
-    tick_val  = sym_info.trade_tick_value
-    tick_size = sym_info.trade_tick_size
-    if tick_size == 0 or tick_val == 0:
-        return cfg["min_lot_size"]
-
-    lot = risk_amt / ((sl_distance / tick_size) * tick_val)
-    step = sym_info.volume_step
-    lot  = max(cfg["min_lot_size"], min(cfg["max_lot_size"], round(lot / step) * step))
-    lot  = round(lot, 2)
-    return lot
-
 def normalize_price(price: float, symbol: str) -> float:
     info = mt5.symbol_info(symbol)
     if info is None:
@@ -275,7 +249,7 @@ class DailyLossTracker:
         if today != self.last_day:
             self.day_start_balance = get_balance()
             self.last_day = today
-            log.info(f"New trading day ��� balance reset to ${self.day_start_balance:.2f}")
+            log.info(f"New trading day — balance reset to ${self.day_start_balance:.2f}")
 
     def is_ok(self, max_loss_pct: float) -> bool:
         self.reset_if_new_day()
@@ -298,8 +272,10 @@ class DailyLossTracker:
 
 def place_trade(symbol: str, order_type: int, atr: float, cfg: dict) -> bool:
     """Open a BUY or SELL trade with auto SL/TP."""
+    # Check if already have a trade on this symbol
     if count_open_trades(symbol, cfg["magic_number"]) > 0:
-        return False  # One trade per symbol
+        log.debug(f"Already have open trade on {symbol}")
+        return False
 
     sym_info = mt5.symbol_info(symbol)
     if sym_info is None:
@@ -327,7 +303,8 @@ def place_trade(symbol: str, order_type: int, atr: float, cfg: dict) -> bool:
     sl    = normalize_price(sl,    symbol)
     tp    = normalize_price(tp,    symbol)
 
-    lot = calc_lot_size(symbol, sl_dist, cfg)
+    # Use fixed lot size
+    lot = cfg["fixed_lot_size"]
 
     request = {
         "action"      : mt5.TRADE_ACTION_DEAL,
@@ -368,9 +345,9 @@ def place_trade(symbol: str, order_type: int, atr: float, cfg: dict) -> bool:
 #  TRADE MANAGEMENT (Breakeven + Trailing)
 # ─────────────────────────────────────────────
 
-def manage_open_trades(cfg: dict, indic_dict: dict):
+def manage_open_trades(cfg: dict, symbol: str, indic: dict):
     """Manage existing positions: breakeven and trailing stop."""
-    positions = mt5.positions_get()
+    positions = mt5.positions_get(symbol=symbol)
     if not positions:
         return
 
@@ -378,17 +355,12 @@ def manage_open_trades(cfg: dict, indic_dict: dict):
         if pos.magic != cfg["magic_number"]:
             continue
 
-        symbol  = pos.symbol
         open_p  = pos.price_open
         cur_sl  = pos.sl
         cur_tp  = pos.tp
         cur_p   = pos.price_current
         p_type  = pos.type  # 0=BUY, 1=SELL
 
-        # Get ATR for this position's symbol
-        if symbol not in indic_dict or indic_dict[symbol] is None:
-            continue
-        indic = indic_dict[symbol]
         atr = indic["atr"]
 
         tp_dist    = atr * cfg["tp_atr_mult"]
@@ -447,11 +419,11 @@ def _modify_sl(ticket: int, new_sl: float, tp: float, symbol: str):
         log.debug(f"SL modify skipped/failed: ticket={ticket} code={code}")
 
 
-# ──────────────────────��──────────────────────
+# ─────────────────────────────────────────────
 #  SIGNAL DETECTION (FAST MODE)
 # ─────────────────────────────────────────────
 
-def get_signal(indic: dict, cfg: dict, current_open_pos: dict) -> Optional[int]:
+def get_signal(indic: dict, cfg: dict) -> Optional[int]:
     """
     Returns:
         mt5.ORDER_TYPE_BUY  — bullish signal
@@ -485,11 +457,11 @@ def get_signal(indic: dict, cfg: dict, current_open_pos: dict) -> Optional[int]:
 # ─────────────────────────────────────────────
 
 def main():
-    log.info("=" * 60)
-    log.info("  🚀 ScalpingEA Python — USTEC FAST EXECUTION MODE")
-    log.info(f"  Symbol: USTECm | Lot Size: 0.05 (Small Lot)")
+    log.info("=" * 70)
+    log.info("  🚀 ScalpingEA Python — USTEC FAST EXECUTION MODE (MONO SYMBOL)")
+    log.info(f"  Symbol: USTEC | Lot Size: {CONFIG['fixed_lot_size']} (Fixed Small Lot)")
     log.info(f"  Target: {CONFIG['target_daily_trades']} trades/day")
-    log.info("=" * 60)
+    log.info("=" * 70)
 
     # ── Connect to MT5 ──
     if not mt5.initialize():
@@ -511,31 +483,20 @@ def main():
     acc = mt5.account_info()
     log.info(f"Connected: {acc.name} | Balance: ${acc.balance:.2f} | Broker: {acc.server}")
 
-    # ── Resolve symbols ──
-    symbols = {}
-    if CONFIG["trade_xauusd"]:
-        s = resolve_symbol("xauusd")
-        symbols["XAUUSD"]  = s
-        log.info(f"XAUUSD symbol  : {s or 'NOT FOUND'}")
-    if CONFIG["trade_ustec"]:
-        s = resolve_symbol("ustec")
-        symbols["USTEC"]   = s
-        log.info(f"USTEC symbol   : {s or 'NOT FOUND'}")
-    if CONFIG["trade_btc"]:
-        s = resolve_symbol("btc")
-        symbols["BTC"]     = s
-        log.info(f"BTC symbol     : {s or 'NOT FOUND'}")
-
-    if all(v is None for v in symbols.values()):
-        log.error("No valid symbols found. Check your Market Watch in MT5.")
+    # ── Resolve USTEC symbol ──
+    symbol = resolve_symbol("ustec")
+    if symbol is None:
+        log.error("❌ Could not resolve USTEC symbol. Check your Market Watch in MT5.")
         mt5.shutdown()
         return
+    
+    log.info(f"✓ Trading Symbol: {symbol}")
 
     # ── Daily loss tracker ──
     loss_tracker = DailyLossTracker()
 
     # ── Bar tracker: only act on new closed bars ──
-    last_bar_time: dict = {k: None for k in symbols}
+    last_bar_time = None
 
     log.info("EA running. Press Ctrl+C to stop.\n")
 
@@ -548,25 +509,24 @@ def main():
 
             if not loss_tracker.is_ok(CONFIG["max_daily_loss_pct"]):
                 # Still manage open trades even if daily limit hit
-                indic_dict = {}
-                for name, symbol in symbols.items():
-                    if symbol is not None:
-                        indic_dict[symbol] = get_indicators(symbol, CONFIG)
-                manage_open_trades(CONFIG, indic_dict)
+                indic = get_indicators(symbol, CONFIG)
+                if indic is not None:
+                    manage_open_trades(CONFIG, symbol, indic)
                 time.sleep(CONFIG["loop_interval"])
                 continue
 
-            # ── Get all indicators first ──
-            indic_dict = {}
-            for name, symbol in symbols.items():
-                if symbol is not None:
-                    indic_dict[symbol] = get_indicators(symbol, CONFIG)
+            # ── Get indicators ──
+            indic = get_indicators(symbol, CONFIG)
+            if indic is None:
+                log.warning(f"Failed to get indicators for {symbol}")
+                time.sleep(CONFIG["loop_interval"])
+                continue
 
             # ── Manage existing positions ──
-            manage_open_trades(CONFIG, indic_dict)
+            manage_open_trades(CONFIG, symbol, indic)
 
-            # ── Check total open trades cap ──
-            total_open = count_open_trades(magic=CONFIG["magic_number"])
+            # ── Check open trades ──
+            total_open = count_open_trades(symbol, CONFIG["magic_number"])
             trades_closed_today = loss_tracker.get_trades_today(CONFIG["magic_number"])
 
             # ── Log daily progress ──
@@ -576,41 +536,38 @@ def main():
                     f"Open Positions: {total_open}/{CONFIG['max_open_trades']}"
                 )
 
-            # ── Analyze each symbol ──
-            for name, symbol in symbols.items():
-                if symbol is None or symbol not in indic_dict or indic_dict[symbol] is None:
-                    continue
+            # ── Only act on new closed bar ──
+            bar_time = indic["last_bar_time"]
+            if last_bar_time == bar_time:
+                time.sleep(CONFIG["loop_interval"])
+                continue
+            last_bar_time = bar_time
 
-                indic = indic_dict[symbol]
+            # ── Log indicators ──
+            log.info(
+                f"{symbol:10s} | EMA({CONFIG['fast_ema']}):{indic['fast_ema_curr']:.4f} "
+                f"EMA({CONFIG['slow_ema']}):{indic['slow_ema_curr']:.4f} "
+                f"RSI:{indic['rsi']:.1f}  ATR:{indic['atr']:.4f}"
+            )
 
-                # Only act on new closed bar
-                bar_time = indic["last_bar_time"]
-                if last_bar_time[name] == bar_time:
-                    continue
-                last_bar_time[name] = bar_time
+            # ── Check if we can open a new trade ──
+            if total_open >= CONFIG["max_open_trades"]:
+                log.debug(f"Max open trades ({CONFIG['max_open_trades']}) reached.")
+                time.sleep(CONFIG["loop_interval"])
+                continue
 
-                log.info(
-                    f"{name:6s} | EMA({CONFIG['fast_ema']}):{indic['fast_ema_curr']:.4f} "
-                    f"EMA({CONFIG['slow_ema']}):{indic['slow_ema_curr']:.4f} "
-                    f"RSI:{indic['rsi']:.1f}  ATR:{indic['atr']:.4f}"
-                )
+            # ── Check if we've hit daily trade target ──
+            if trades_closed_today >= CONFIG["target_daily_trades"]:
+                log.info(f"✅ Daily target of {CONFIG['target_daily_trades']} trades reached — managing positions only.")
+                time.sleep(CONFIG["loop_interval"])
+                continue
 
-                if total_open >= CONFIG["max_open_trades"]:
-                    log.debug(f"Max open trades ({CONFIG['max_open_trades']}) reached — skipping {name}.")
-                    continue
-
-                # Check if we've hit daily trade target
-                if trades_closed_today >= CONFIG["target_daily_trades"]:
-                    log.info(f"✅ Daily target of {CONFIG['target_daily_trades']} trades reached — managing positions only.")
-                    continue
-
-                current_open = {s: count_open_trades(s, CONFIG["magic_number"]) for s in symbols.values() if s}
-                signal = get_signal(indic, CONFIG, current_open)
-                if signal is not None:
-                    placed = place_trade(symbol, signal, indic["atr"], CONFIG)
-                    if placed:
-                        total_open += 1
-                        trades_closed_today += 0  # Update when closed
+            # ── Get signal and place trade ──
+            signal = get_signal(indic, CONFIG)
+            if signal is not None:
+                placed = place_trade(symbol, signal, indic["atr"], CONFIG)
+                if placed:
+                    log.info(f"✓ Trade count after open: {total_open + 1}/{CONFIG['max_open_trades']}")
 
             time.sleep(CONFIG["loop_interval"])
 
