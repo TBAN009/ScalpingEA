@@ -28,7 +28,7 @@ from typing import Optional, Tuple
 
 # ─────────────────────────────────────────────
 #  CONFIGURATION — FAST EXECUTION MODE
-# ─────────────────────────────────────────────
+# ��────────────────────────────────────────────
 
 CONFIG = {
     # MT5 Login (leave as None to use already-logged-in terminal)
@@ -37,15 +37,15 @@ CONFIG = {
     "mt5_server"   : None,       # e.g. "Exness-MT5Real8"
 
     # Symbols — Exness variants auto-detected
-    "trade_xauusd" : True,
-    "trade_ustec"  : True,
-    "trade_btc"    : True,
+    "trade_xauusd" : False,      # Disabled for USETCm focus
+    "trade_ustec"  : True,       # USTECm primary trading symbol
+    "trade_btc"    : False,      # Disabled for USETCm focus
 
     # Risk Management
     "risk_percent"      : 1.0,    # % of balance risked per trade
-    "max_lot_size"      : 0.01,   # Hard cap on lot size (safe for $10 acc)
-    "min_lot_size"      : 0.01,
-    "max_open_trades"   : 5,      # FAST MODE: Allow up to 5 simultaneous trades
+    "max_lot_size"      : 0.05,   # USTECm starting lot size (small lot)
+    "min_lot_size"      : 0.05,   # USTECm minimum lot size
+    "max_open_trades"   : 5,      # Max simultaneous trades total
     "max_daily_loss_pct": 5.0,    # Stop trading if daily loss hits this %
     "target_daily_trades": 10,    # Target number of trades per day
 
@@ -75,7 +75,7 @@ CONFIG = {
 
     # EA Identity
     "magic_number"  : 202401,
-    "comment"       : "ScalpEA_FAST",
+    "comment"       : "ScalpEA_USTEC",
     "timeframe"     : mt5.TIMEFRAME_M1,  # FAST MODE: M1 instead of M5
     "loop_interval" : 1,         # FAST MODE: 1 second instead of 10
 }
@@ -102,7 +102,7 @@ log = logging.getLogger("ScalpingEA")
 
 SYMBOL_CANDIDATES = {
     "xauusd": ["XAUUSD", "XAUUSDm", "GOLD", "XAUUSD."],
-    "ustec" : ["USTECm", "NAS100", "NAS100m", "US100", "NDX"],
+    "ustec" : ["USTEC", "NAS100", "NAS100m", "US100", "NDX"],
     "btc"   : ["BTCUSD", "BTCUSDm", "BITCOIN", "BTC/USD"],
 }
 
@@ -213,7 +213,14 @@ def count_trades_today(magic: int = 0) -> int:
     )
 
 def calc_lot_size(symbol: str, sl_distance: float, cfg: dict) -> float:
-    """Risk-based lot size calculation."""
+    """
+    Risk-based lot size calculation.
+    For USTECm: Uses fixed 0.05 lot size (starting small lot).
+    """
+    # For USTECm, use fixed lot size
+    if "ustec" in symbol.lower():
+        return cfg["max_lot_size"]
+    
     balance    = get_balance()
     risk_amt   = balance * (cfg["risk_percent"] / 100.0)
     sym_info   = mt5.symbol_info(symbol)
@@ -268,7 +275,7 @@ class DailyLossTracker:
         if today != self.last_day:
             self.day_start_balance = get_balance()
             self.last_day = today
-            log.info(f"New trading day — balance reset to ${self.day_start_balance:.2f}")
+            log.info(f"New trading day ��� balance reset to ${self.day_start_balance:.2f}")
 
     def is_ok(self, max_loss_pct: float) -> bool:
         self.reset_if_new_day()
@@ -440,7 +447,7 @@ def _modify_sl(ticket: int, new_sl: float, tp: float, symbol: str):
         log.debug(f"SL modify skipped/failed: ticket={ticket} code={code}")
 
 
-# ─────────────────────────────────────────────
+# ──────────────────────��──────────────────────
 #  SIGNAL DETECTION (FAST MODE)
 # ─────────────────────────────────────────────
 
@@ -479,7 +486,8 @@ def get_signal(indic: dict, cfg: dict, current_open_pos: dict) -> Optional[int]:
 
 def main():
     log.info("=" * 60)
-    log.info("  🚀 ScalpingEA Python — FAST EXECUTION MODE")
+    log.info("  🚀 ScalpingEA Python — USTEC FAST EXECUTION MODE")
+    log.info(f"  Symbol: USTECm | Lot Size: 0.05 (Small Lot)")
     log.info(f"  Target: {CONFIG['target_daily_trades']} trades/day")
     log.info("=" * 60)
 
@@ -548,7 +556,7 @@ def main():
                 time.sleep(CONFIG["loop_interval"])
                 continue
 
-            # ── Get all indicators first ─��
+            # ── Get all indicators first ──
             indic_dict = {}
             for name, symbol in symbols.items():
                 if symbol is not None:
